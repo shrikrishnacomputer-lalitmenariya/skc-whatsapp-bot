@@ -142,6 +142,12 @@ async function initWhatsappSocket() {
         const statusCode = lastDisconnect?.error?.output?.statusCode;
         console.log(`❌ Disconnected (code: ${statusCode}).`);
 
+        // Prevent auto-reconnect if this socket was manually killed or replaced
+        if (globalSocket !== sock) {
+          console.log('🛑 Socket was manually killed. Stopping reconnect loop.');
+          return;
+        }
+
         // Only auto-reconnect for non-logout errors (e.g. 515 pairing restart)
         if (statusCode !== DisconnectReason.loggedOut) {
           console.log('🔄 Reconnecting in 5 seconds...');
