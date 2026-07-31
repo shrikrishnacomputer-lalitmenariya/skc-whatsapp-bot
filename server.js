@@ -112,7 +112,6 @@ async function initWhatsappSocket() {
       browser: Browsers.ubuntu('Chrome'),
       printQRInTerminal: true,
       logger: logger,
-      shouldSyncHistoryMessage: () => false,
       fireInitQueries: true,
       markOnlineOnConnect: false,
     });
