@@ -76,7 +76,7 @@ async function initWhatsappSocket() {
     // Dynamically import Baileys (ESM module)
     const baileys = await import('@whiskeysockets/baileys');
     const makeWASocket = baileys.default;
-    const { DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion } = baileys;
+    const { DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion, Browsers } = baileys;
 
     // Ensure session directory exists
     if (!fs.existsSync(sessionDir)) {
@@ -95,6 +95,7 @@ async function initWhatsappSocket() {
     const sock = makeWASocket({
       version,
       auth: state,
+      browser: Browsers.macOS('Desktop'),
       printQRInTerminal: true,
       logger: logger,
       shouldSyncHistoryMessage: () => false,
