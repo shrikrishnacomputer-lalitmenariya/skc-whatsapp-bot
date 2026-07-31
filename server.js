@@ -352,11 +352,26 @@ app.post('/send', async (req, res) => {
 });
 
 // ─── Start Server ───────────────────────────────────────────────
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`\n🤖 WhatsApp Bot microservice running on port ${PORT}`);
   console.log(`   Health:     http://localhost:${PORT}/health`);
   console.log(`   Status:     http://localhost:${PORT}/status`);
   console.log(`   Connect:    POST http://localhost:${PORT}/connect`);
   console.log(`   Disconnect: POST http://localhost:${PORT}/disconnect`);
-  console.log(`   Send:       POST http://localhost:${PORT}/send\n`);
+  console.log(`   Send:       POST http://localhost:${PORT}/send`);
+
+  // Auto-start bot on boot if a session exists or DB expects it
+  try {
+    const settings = await getSettings();
+    const hasSession = fs.existsSync(sessionDir) && fs.readdirSync(sessionDir).length > 0;
+    
+    if (settings.status === 'connected' || settings.status === 'connecting' || hasSession) {
+      console.log('🔄 Active session detected. Auto-starting WhatsApp daemon...');
+      initWhatsappSocket().catch(e => console.error('Daemon startup error:', e));
+    } else {
+      console.log('ℹ️ No active session. Waiting for manual /connect trigger.');
+    }
+  } catch (err) {
+    console.error('Startup DB check failed:', err);
+  }
 });
