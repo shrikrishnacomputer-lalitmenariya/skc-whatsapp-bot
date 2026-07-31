@@ -164,6 +164,9 @@ async function disconnectWhatsapp() {
     globalSocket = null;
   }
 
+  // Force reset initialization lock
+  isInitializing = false;
+
   const settings = await getSettings();
   await updateSettings(settings.id, { status: 'disconnected', qr_code: null });
 
