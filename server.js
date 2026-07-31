@@ -64,37 +64,41 @@ async function logAuditEvent(billId, billNumber, event, details) {
   `, [billId, billNumber, event, details]);
 }
 
+// ─── Session Cleanup Helper (SINGLE place for all cleanup) ─────
+function clearSessionFiles() {
+  if (fs.existsSync(sessionDir)) {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+  fs.mkdirSync(sessionDir, { recursive: true });
+  console.log('🧹 Session files cleared.');
+}
+
 // ─── Baileys WhatsApp Daemon ────────────────────────────────────
 async function initWhatsappSocket() {
   if (isInitializing) {
-    console.log('⏳ WhatsApp initialization already in progress...');
+    console.log('⏳ WhatsApp initialization already in progress, skipping...');
     return;
   }
 
-  console.log('🚀 Starting initWhatsappSocket flow...');
   isInitializing = true;
+  console.log('🚀 Starting WhatsApp connection...');
 
   try {
-    console.log('📦 Importing baileys...');
     const baileys = await import('@whiskeysockets/baileys');
     const makeWASocket = baileys.default;
     const { DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion, Browsers } = baileys;
 
-    console.log('📁 Checking session directory...');
+    // Ensure session directory exists
     if (!fs.existsSync(sessionDir)) {
       fs.mkdirSync(sessionDir, { recursive: true });
     }
 
-    console.log('📡 Fetching settings from DB...');
     const settings = await getSettings();
-
-    console.log('📝 Updating DB status...');
     await updateSettings(settings.id, { status: 'connecting', qr_code: null });
 
-    console.log('🔐 Initializing auth state...');
     const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
-    
-    console.log('🌐 Fetching latest WhatsApp version...');
+
+    // Use cached version to avoid rate limiting
     let versionToUse = cachedWaVersion;
     if (!versionToUse) {
       const { version, isLatest } = await fetchLatestBaileysVersion();
@@ -105,7 +109,6 @@ async function initWhatsappSocket() {
       console.log(`using cached WA v${versionToUse.join('.')}`);
     }
 
-    console.log('🔌 Creating WA socket...');
     const sock = makeWASocket({
       version: versionToUse,
       auth: state,
@@ -125,8 +128,6 @@ async function initWhatsappSocket() {
     sock.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect, qr } = update;
 
-      console.log(`📡 Connection update: ${connection || 'pending'}`);
-
       if (qr) {
         console.log('📱 New QR code generated!');
         await updateSettings(settings.id, { status: 'connecting', qr_code: qr });
@@ -139,24 +140,20 @@ async function initWhatsappSocket() {
 
       if (connection === 'close') {
         const statusCode = lastDisconnect?.error?.output?.statusCode;
-        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
         console.log(`❌ Disconnected (code: ${statusCode}).`);
 
-        if (shouldReconnect) {
-          console.log('🔄 Reconnecting in 5 seconds to finalize pairing...');
+        // Only auto-reconnect for non-logout errors (e.g. 515 pairing restart)
+        if (statusCode !== DisconnectReason.loggedOut) {
+          console.log('🔄 Reconnecting in 5 seconds...');
           isInitializing = false;
           setTimeout(() => initWhatsappSocket(), 5000);
         } else {
-          console.log('🛑 Session explicitly logged out or cancelled. Cleaning up...');
+          // Logged out (401) — just reset state, don't clean files here
+          // Files will be cleaned by /connect when user clicks "Link" again
+          console.log('🛑 Session logged out. Resetting state.');
           globalSocket = null;
           isInitializing = false;
-          
           await updateSettings(settings.id, { status: 'disconnected', qr_code: null });
-
-          if (fs.existsSync(sessionDir)) {
-            fs.rmSync(sessionDir, { recursive: true, force: true });
-            fs.mkdirSync(sessionDir, { recursive: true });
-          }
         }
       }
     });
@@ -172,11 +169,12 @@ async function initWhatsappSocket() {
 }
 
 async function disconnectWhatsapp() {
+  // Close the socket without calling logout() to avoid triggering 401 event
   if (globalSocket) {
     try {
-      await globalSocket.logout();
+      globalSocket.end(undefined);
     } catch (e) {
-      console.error('Error during logout:', e);
+      console.error('Error closing socket:', e);
     }
     globalSocket = null;
   }
@@ -186,11 +184,9 @@ async function disconnectWhatsapp() {
   const settings = await getSettings();
   await updateSettings(settings.id, { status: 'disconnected', qr_code: null });
 
-  // Clear session files
-  if (fs.existsSync(sessionDir)) {
-    fs.rmSync(sessionDir, { recursive: true, force: true });
-    fs.mkdirSync(sessionDir, { recursive: true });
-  }
+  // Single cleanup point
+  clearSessionFiles();
+  console.log('✅ WhatsApp disconnected and cleaned up.');
 }
 
 async function sendWhatsappMessage(phone, text, pdfPath, pdfFilename, pdfBase64) {
@@ -285,17 +281,17 @@ app.get('/status', async (req, res) => {
 // POST /connect — Start WhatsApp connection and QR generation
 app.post('/connect', async (req, res) => {
   try {
-    const settings = await getSettings();
-    await updateSettings(settings.id, { status: 'connecting', qr_code: null });
-
-    // Clear stale session files to prevent 401 from old credentials
-    if (fs.existsSync(sessionDir)) {
-      fs.rmSync(sessionDir, { recursive: true, force: true });
-      fs.mkdirSync(sessionDir, { recursive: true });
-      console.log('🧹 Cleared stale session files before fresh connect.');
+    // Step 1: Kill any existing socket silently
+    if (globalSocket) {
+      try { globalSocket.end(undefined); } catch (e) { /* ignore */ }
+      globalSocket = null;
     }
+    isInitializing = false;
 
-    // Fire daemon in background (don't await — it runs forever)
+    // Step 2: Clean session files (ONLY place this happens for connect)
+    clearSessionFiles();
+
+    // Step 3: Start fresh daemon
     initWhatsappSocket().catch((err) => {
       console.error('Daemon startup error:', err);
     });
