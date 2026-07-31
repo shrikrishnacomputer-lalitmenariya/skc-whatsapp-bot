@@ -95,7 +95,7 @@ async function initWhatsappSocket() {
     const sock = makeWASocket({
       version,
       auth: state,
-      browser: Browsers.macOS('Desktop'),
+      browser: Browsers.ubuntu('Chrome'),
       printQRInTerminal: true,
       logger: logger,
       shouldSyncHistoryMessage: () => false,
