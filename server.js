@@ -26,6 +26,7 @@ const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
 // ─── Global WhatsApp State ──────────────────────────────────────
 let globalSocket = null;
 let isInitializing = false;
+let cachedWaVersion = null;
 
 // ─── Database Helpers ───────────────────────────────────────────
 async function getSettings() {
@@ -70,30 +71,43 @@ async function initWhatsappSocket() {
     return;
   }
 
+  console.log('🚀 Starting initWhatsappSocket flow...');
   isInitializing = true;
 
   try {
-    // Dynamically import Baileys (ESM module)
+    console.log('📦 Importing baileys...');
     const baileys = await import('@whiskeysockets/baileys');
     const makeWASocket = baileys.default;
     const { DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion, Browsers } = baileys;
 
-    // Ensure session directory exists
+    console.log('📁 Checking session directory...');
     if (!fs.existsSync(sessionDir)) {
       fs.mkdirSync(sessionDir, { recursive: true });
     }
 
+    console.log('📡 Fetching settings from DB...');
     const settings = await getSettings();
 
-    // Update DB to "connecting"
+    console.log('📝 Updating DB status...');
     await updateSettings(settings.id, { status: 'connecting', qr_code: null });
 
+    console.log('🔐 Initializing auth state...');
     const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
-    const { version, isLatest } = await fetchLatestBaileysVersion();
-    console.log(`using WA v${version.join('.')}, isLatest: ${isLatest}`);
+    
+    console.log('🌐 Fetching latest WhatsApp version...');
+    let versionToUse = cachedWaVersion;
+    if (!versionToUse) {
+      const { version, isLatest } = await fetchLatestBaileysVersion();
+      console.log(`fetched WA v${version.join('.')}, isLatest: ${isLatest}`);
+      cachedWaVersion = version;
+      versionToUse = version;
+    } else {
+      console.log(`using cached WA v${versionToUse.join('.')}`);
+    }
 
+    console.log('🔌 Creating WA socket...');
     const sock = makeWASocket({
-      version,
+      version: versionToUse,
       auth: state,
       browser: Browsers.ubuntu('Chrome'),
       printQRInTerminal: true,
