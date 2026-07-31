@@ -76,7 +76,7 @@ async function initWhatsappSocket() {
     // Dynamically import Baileys (ESM module)
     const baileys = await import('@whiskeysockets/baileys');
     const makeWASocket = baileys.default;
-    const { DisconnectReason, useMultiFileAuthState } = baileys;
+    const { DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion } = baileys;
 
     // Ensure session directory exists
     if (!fs.existsSync(sessionDir)) {
@@ -89,8 +89,11 @@ async function initWhatsappSocket() {
     await updateSettings(settings.id, { status: 'connecting', qr_code: null });
 
     const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+    const { version, isLatest } = await fetchLatestBaileysVersion();
+    console.log(`using WA v${version.join('.')}, isLatest: ${isLatest}`);
 
     const sock = makeWASocket({
+      version,
       auth: state,
       printQRInTerminal: true,
       logger: logger,
@@ -164,7 +167,6 @@ async function disconnectWhatsapp() {
     globalSocket = null;
   }
 
-  // Force reset initialization lock
   isInitializing = false;
 
   const settings = await getSettings();
