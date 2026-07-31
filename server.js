@@ -274,6 +274,13 @@ app.post('/connect', async (req, res) => {
     const settings = await getSettings();
     await updateSettings(settings.id, { status: 'connecting', qr_code: null });
 
+    // Clear stale session files to prevent 401 from old credentials
+    if (fs.existsSync(sessionDir)) {
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+      fs.mkdirSync(sessionDir, { recursive: true });
+      console.log('🧹 Cleared stale session files before fresh connect.');
+    }
+
     // Fire daemon in background (don't await — it runs forever)
     initWhatsappSocket().catch((err) => {
       console.error('Daemon startup error:', err);
