@@ -121,6 +121,17 @@ async function initWhatsappSocket() {
 
     globalSocket = sock;
 
+    // Start a 30-second watchdog timer
+    const connectionTimeout = setTimeout(async () => {
+      if (globalSocket === sock) {
+        console.log('⏱️ WhatsApp connection timed out after 30 seconds. Terminating socket...');
+        try { globalSocket.end(undefined); } catch (e) { /* ignore */ }
+        globalSocket = null;
+        clearSessionFiles();
+        await updateSettings(settings.id, { status: 'disconnected', qr_code: null });
+      }
+    }, 10000);
+
     // Save credentials on update
     sock.ev.on('creds.update', saveCreds);
 
@@ -134,11 +145,13 @@ async function initWhatsappSocket() {
       }
 
       if (connection === 'open') {
+        clearTimeout(connectionTimeout);
         console.log('✅ WhatsApp connected successfully!');
         await updateSettings(settings.id, { status: 'connected', qr_code: null });
       }
 
       if (connection === 'close') {
+        clearTimeout(connectionTimeout);
         const statusCode = lastDisconnect?.error?.output?.statusCode;
         console.log(`❌ Disconnected (code: ${statusCode}).`);
 
