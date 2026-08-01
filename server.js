@@ -27,6 +27,8 @@ const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
 let globalSocket = null;
 let isInitializing = false;
 let cachedWaVersion = null;
+let globalConnectionTimeout = null;
+let reconnectTimer = null;
 
 // ─── Database Helpers ───────────────────────────────────────────
 async function getSettings() {
@@ -67,9 +69,9 @@ async function logAuditEvent(billId, billNumber, event, details) {
 // ─── Session Cleanup Helper (SINGLE place for all cleanup) ─────
 function clearSessionFiles() {
   if (fs.existsSync(sessionDir)) {
-    fs.rmSync(sessionDir, { recursive: true, force: true });
-  }
+  fs.rmSync(sessionDir, { recursive: true, force: true });
   fs.mkdirSync(sessionDir, { recursive: true });
+}
   console.log('🧹 Session files cleared.');
 }
 
@@ -94,6 +96,17 @@ async function initWhatsappSocket() {
     }
 
     const settings = await getSettings();
+
+    // ── Dead-man's switch ────────────────────────────────────────────────────
+    // If a stray timer fired but the DB was explicitly set to disconnected,
+    // abort immediately so we don't overwrite the user's manual disconnect.
+    if (settings.status === 'disconnected') {
+      console.log('🛑 DB is set to disconnected. Aborting daemon startup to prevent zombie loops.');
+      isInitializing = false;
+      return;
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     await updateSettings(settings.id, { status: 'connecting', qr_code: null });
 
     const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
@@ -124,7 +137,7 @@ async function initWhatsappSocket() {
 
     // Start a 60-second watchdog timer. If the user doesn't scan the QR code
     // within 60 seconds, this will gracefully kill the socket and reset the DB to disconnected.
-    const connectionTimeout = setTimeout(async () => {
+    globalConnectionTimeout = setTimeout(async () => {
       if (globalSocket === sock) {
         console.log('⏱️ WhatsApp connection timed out after 60 seconds. Terminating socket...');
         try { globalSocket.end(undefined); } catch (e) { /* ignore */ }
@@ -154,13 +167,13 @@ async function initWhatsappSocket() {
       }
 
       if (connection === 'open') {
-        clearTimeout(connectionTimeout);
+        clearTimeout(globalConnectionTimeout);
         console.log('✅ WhatsApp connected successfully!');
         await updateSettings(settings.id, { status: 'connected', qr_code: null });
       }
 
       if (connection === 'close') {
-        clearTimeout(connectionTimeout);
+        clearTimeout(globalConnectionTimeout);
         const statusCode = lastDisconnect?.error?.output?.statusCode;
         console.log(`❌ Disconnected (code: ${statusCode}).`);
 
@@ -175,7 +188,7 @@ async function initWhatsappSocket() {
           // Code 515 = pairing restart (expected after QR scan). Reconnect once.
           console.log('🔄 Reconnecting in 5 seconds (pairing restart)...');
           isInitializing = false;
-          setTimeout(() => initWhatsappSocket(), 5000);
+          reconnectTimer = setTimeout(() => initWhatsappSocket(), 5000);
         } else if (statusCode === DisconnectReason.loggedOut) {
           // Logged out (401) — reset state cleanly
           console.log('🛑 Session logged out. Resetting state.');
@@ -205,6 +218,10 @@ async function initWhatsappSocket() {
 }
 
 async function disconnectWhatsapp() {
+  // Clear any pending timers so they don't fire and restart the daemon
+  clearTimeout(globalConnectionTimeout);
+  clearTimeout(reconnectTimer);
+
   // Close the socket without calling logout() to avoid triggering 401 event
   if (globalSocket) {
     try {
