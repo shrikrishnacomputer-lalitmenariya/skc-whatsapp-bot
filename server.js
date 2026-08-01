@@ -382,8 +382,8 @@ app.listen(PORT, async () => {
     const settings = await getSettings();
     const hasSession = fs.existsSync(sessionDir) && fs.readdirSync(sessionDir).length > 0;
     
-    if (settings.status === 'connected' || hasSession) {
-      console.log('🔄 Active session detected. Auto-starting WhatsApp daemon...');
+    if (settings.status === 'connected') {
+      console.log('🔄 Active session detected (DB=connected). Auto-starting WhatsApp daemon...');
       initWhatsappSocket().catch(e => console.error('Daemon startup error:', e));
     } else {
       console.log('ℹ️ No active session. Waiting for manual /connect trigger.');
