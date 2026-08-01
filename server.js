@@ -121,16 +121,17 @@ async function initWhatsappSocket() {
 
     globalSocket = sock;
 
-    // Start a 30-second watchdog timer
+    // Start a 60-second watchdog timer. If the user doesn't scan the QR code
+    // within 60 seconds, this will gracefully kill the socket and reset the DB to disconnected.
     const connectionTimeout = setTimeout(async () => {
       if (globalSocket === sock) {
-        console.log('⏱️ WhatsApp connection timed out after 30 seconds. Terminating socket...');
+        console.log('⏱️ WhatsApp connection timed out after 60 seconds. Terminating socket...');
         try { globalSocket.end(undefined); } catch (e) { /* ignore */ }
         globalSocket = null;
         clearSessionFiles();
         await updateSettings(settings.id, { status: 'disconnected', qr_code: null });
       }
-    }, 10000);
+    }, 60000);
 
     // Save credentials on update
     sock.ev.on('creds.update', saveCreds);
@@ -140,7 +141,6 @@ async function initWhatsappSocket() {
       const { connection, lastDisconnect, qr } = update;
 
       if (qr) {
-        clearTimeout(connectionTimeout); // Stop watchdog so user has unlimited time to scan
         console.log('📱 New QR code generated!');
         await updateSettings(settings.id, { status: 'connecting', qr_code: qr });
       }
