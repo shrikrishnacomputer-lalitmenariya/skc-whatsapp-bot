@@ -159,6 +159,7 @@ async function initWhatsappSocket() {
         // Prevent auto-reconnect if this socket was manually killed or replaced
         if (globalSocket !== sock) {
           console.log('🛑 Socket was manually killed. Stopping reconnect loop.');
+          await updateSettings(settings.id, { status: 'disconnected', qr_code: null });
           return;
         }
 
