@@ -116,6 +116,7 @@ async function initWhatsappSocket() {
       printQRInTerminal: true,
       logger: logger,
       fireInitQueries: false,
+      syncFullHistory: false,   // Prevent full history download (stops OOM crashes)
       markOnlineOnConnect: false,
     });
 
@@ -135,6 +136,11 @@ async function initWhatsappSocket() {
 
     // Save credentials on update
     sock.ev.on('creds.update', saveCreds);
+
+    // Completely ignore history sync events to prevent memory spikes
+    sock.ev.on('messaging-history.set', () => {
+      console.log('📚 History sync event received — ignored to save memory.');
+    });
 
     // Handle connection updates
     sock.ev.on('connection.update', async (update) => {
@@ -165,17 +171,24 @@ async function initWhatsappSocket() {
           return;
         }
 
-        // Only auto-reconnect for non-logout errors (e.g. 515 pairing restart)
-        if (statusCode !== DisconnectReason.loggedOut) {
-          console.log('🔄 Reconnecting in 5 seconds...');
+        if (statusCode === 515) {
+          // Code 515 = pairing restart (expected after QR scan). Reconnect once.
+          console.log('🔄 Reconnecting in 5 seconds (pairing restart)...');
           isInitializing = false;
           setTimeout(() => initWhatsappSocket(), 5000);
-        } else {
-          // Logged out (401) — just reset state, don't clean files here
-          // Files will be cleaned by /connect when user clicks "Link" again
+        } else if (statusCode === DisconnectReason.loggedOut) {
+          // Logged out (401) — reset state cleanly
           console.log('🛑 Session logged out. Resetting state.');
           globalSocket = null;
           isInitializing = false;
+          await updateSettings(settings.id, { status: 'disconnected', qr_code: null });
+        } else {
+          // Any other disconnect (network error, OOM restart, etc.)
+          // Do NOT auto-reconnect — reset DB to disconnected and let user reconnect manually.
+          console.log(`⚠️ Unexpected disconnect (code: ${statusCode}). Resetting to disconnected.`);
+          globalSocket = null;
+          isInitializing = false;
+          clearSessionFiles();
           await updateSettings(settings.id, { status: 'disconnected', qr_code: null });
         }
       }
