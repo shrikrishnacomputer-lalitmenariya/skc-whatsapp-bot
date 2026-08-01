@@ -115,7 +115,7 @@ async function initWhatsappSocket() {
       browser: Browsers.ubuntu('Chrome'),
       printQRInTerminal: true,
       logger: logger,
-      fireInitQueries: true,
+      fireInitQueries: false,
       markOnlineOnConnect: false,
     });
 
@@ -140,6 +140,7 @@ async function initWhatsappSocket() {
       const { connection, lastDisconnect, qr } = update;
 
       if (qr) {
+        clearTimeout(connectionTimeout); // Stop watchdog so user has unlimited time to scan
         console.log('📱 New QR code generated!');
         await updateSettings(settings.id, { status: 'connecting', qr_code: qr });
       }
