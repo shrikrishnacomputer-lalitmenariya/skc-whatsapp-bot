@@ -142,6 +142,8 @@ async function initWhatsappSocket() {
 
       if (qr) {
         console.log('📱 New QR code generated!');
+        console.log('status updated to connecting');
+
         await updateSettings(settings.id, { status: 'connecting', qr_code: qr });
       }
 
@@ -367,7 +369,7 @@ app.listen(PORT, async () => {
     const settings = await getSettings();
     const hasSession = fs.existsSync(sessionDir) && fs.readdirSync(sessionDir).length > 0;
     
-    if (settings.status === 'connected' || settings.status === 'connecting' || hasSession) {
+    if (settings.status === 'connected' || hasSession) {
       console.log('🔄 Active session detected. Auto-starting WhatsApp daemon...');
       initWhatsappSocket().catch(e => console.error('Daemon startup error:', e));
     } else {
