@@ -9,6 +9,7 @@ const { Pool } = require('pg');
 const PORT = process.env.PORT || 3001;
 const API_KEY = process.env.API_KEY;
 const DATABASE_URL = process.env.DATABASE_URL;
+const MAX_RECONNECT_ATTEMPTS = 3; // caps the 515 retry loop — prevents zombie loops
 
 if (!API_KEY) {
   console.error('❌ API_KEY environment variable is required');
@@ -29,10 +30,11 @@ let isInitializing = false;
 let cachedWaVersion = null;
 let globalConnectionTimeout = null;
 let reconnectTimer = null;
+let reconnectAttempts = 0; // NEW — tracks consecutive 515 retries
 
 // ─── Database Helpers ───────────────────────────────────────────
 async function getSettings() {
-  const res = await pool.query('SELECT * FROM "whatsapp_settings" LIMIT 1');
+  const res = await pool.query('SELECT * FROM "whatsapp_settings" ORDER BY id ASC LIMIT 1');
   if (res.rows.length === 0) {
     const created = await pool.query(`
       INSERT INTO "whatsapp_settings" (owner_phone, status, simulate_failures, simulate_session_error)
@@ -67,11 +69,17 @@ async function logAuditEvent(billId, billNumber, event, details) {
 }
 
 // ─── Session Cleanup Helper (SINGLE place for all cleanup) ─────
+// FIXED: only deletes the CONTENTS of sessionDir, never the folder itself.
+// sessionDir is now a Railway Volume mount point — rmdir'ing it directly
+// throws EBUSY because the OS refuses to remove an active mount.
 function clearSessionFiles() {
   if (fs.existsSync(sessionDir)) {
-  fs.rmSync(sessionDir, { recursive: true, force: true });
-  fs.mkdirSync(sessionDir, { recursive: true });
-}
+    for (const entry of fs.readdirSync(sessionDir)) {
+      fs.rmSync(path.join(sessionDir, entry), { recursive: true, force: true });
+    }
+  } else {
+    fs.mkdirSync(sessionDir, { recursive: true });
+  }
   console.log('🧹 Session files cleared.');
 }
 
@@ -103,6 +111,7 @@ async function initWhatsappSocket() {
     if (settings.status === 'disconnected') {
       console.log('🛑 DB is set to disconnected. Aborting daemon startup to prevent zombie loops.');
       isInitializing = false;
+      reconnectAttempts = 0;
       return;
     }
     // ─────────────────────────────────────────────────────────────────────────
@@ -142,6 +151,7 @@ async function initWhatsappSocket() {
         console.log('⏱️ WhatsApp connection timed out after 60 seconds. Terminating socket...');
         try { globalSocket.end(undefined); } catch (e) { /* ignore */ }
         globalSocket = null;
+        reconnectAttempts = 0;
         clearSessionFiles();
         await updateSettings(settings.id, { status: 'disconnected', qr_code: null });
       }
@@ -161,13 +171,12 @@ async function initWhatsappSocket() {
 
       if (qr) {
         console.log('📱 New QR code generated!');
-        console.log('status updated to connecting');
-
         await updateSettings(settings.id, { status: 'connecting', qr_code: qr });
       }
 
       if (connection === 'open') {
         clearTimeout(globalConnectionTimeout);
+        reconnectAttempts = 0; // reset on successful connection
         console.log('✅ WhatsApp connected successfully!');
         await updateSettings(settings.id, { status: 'connected', qr_code: null });
       }
@@ -180,20 +189,36 @@ async function initWhatsappSocket() {
         // Prevent auto-reconnect if this socket was manually killed or replaced
         if (globalSocket !== sock) {
           console.log('🛑 Socket was manually killed. Stopping reconnect loop.');
+          reconnectAttempts = 0;
           await updateSettings(settings.id, { status: 'disconnected', qr_code: null });
           return;
         }
 
         if (statusCode === 515) {
-          // Code 515 = pairing restart (expected after QR scan). Reconnect once.
-          console.log('🔄 Reconnecting in 5 seconds (pairing restart)...');
-          isInitializing = false;
-          reconnectTimer = setTimeout(() => initWhatsappSocket(), 5000);
+          // Code 515 = pairing restart. This is EXPECTED and REQUIRED after a
+          // fresh QR scan — WhatsApp always closes once and needs one reconnect
+          // to finish the handshake. But if the session is broken, this can
+          // repeat forever, so we cap it.
+          reconnectAttempts++;
+
+          if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
+            console.log(`🛑 Max reconnect attempts (${MAX_RECONNECT_ATTEMPTS}) reached. Session appears broken — resetting.`);
+            globalSocket = null;
+            isInitializing = false;
+            reconnectAttempts = 0;
+            clearSessionFiles(); // wipe the broken session so next connect starts clean
+            await updateSettings(settings.id, { status: 'disconnected', qr_code: null });
+          } else {
+            console.log(`🔄 Reconnecting in 5 seconds (pairing restart, attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`);
+            isInitializing = false;
+            reconnectTimer = setTimeout(() => initWhatsappSocket(), 5000);
+          }
         } else if (statusCode === DisconnectReason.loggedOut) {
           // Logged out (401) — reset state cleanly
           console.log('🛑 Session logged out. Resetting state.');
           globalSocket = null;
           isInitializing = false;
+          reconnectAttempts = 0;
           await updateSettings(settings.id, { status: 'disconnected', qr_code: null });
         } else {
           // Any other disconnect (network error, OOM restart, etc.)
@@ -201,6 +226,7 @@ async function initWhatsappSocket() {
           console.log(`⚠️ Unexpected disconnect (code: ${statusCode}). Resetting to disconnected.`);
           globalSocket = null;
           isInitializing = false;
+          reconnectAttempts = 0;
           clearSessionFiles();
           await updateSettings(settings.id, { status: 'disconnected', qr_code: null });
         }
@@ -221,6 +247,7 @@ async function disconnectWhatsapp() {
   // Clear any pending timers so they don't fire and restart the daemon
   clearTimeout(globalConnectionTimeout);
   clearTimeout(reconnectTimer);
+  reconnectAttempts = 0;
 
   // Close the socket without calling logout() to avoid triggering 401 event
   if (globalSocket) {
@@ -257,7 +284,7 @@ async function sendWhatsappMessage(phone, text, pdfPath, pdfFilename, pdfBase64)
   // Send PDF if provided
   if ((pdfPath || pdfBase64) && pdfFilename) {
     let pdfBuffer;
-    
+
     if (pdfBase64) {
       pdfBuffer = Buffer.from(pdfBase64, 'base64');
     } else if (pdfPath?.startsWith('http')) {
@@ -332,19 +359,19 @@ app.get('/status', async (req, res) => {
 });
 
 // POST /connect — Start WhatsApp connection and QR generation
+// FIXED: no longer wipes session files on every connect click.
+// initWhatsappSocket() -> useMultiFileAuthState() will reuse a valid
+// existing session automatically. Only a broken/expired session gets
+// cleared, and only from inside the connection.update handler itself.
 app.post('/connect', async (req, res) => {
   try {
-    // Step 1: Kill any existing socket silently
     if (globalSocket) {
       try { globalSocket.end(undefined); } catch (e) { /* ignore */ }
       globalSocket = null;
     }
     isInitializing = false;
+    reconnectAttempts = 0;
 
-    // Step 2: Clean session files (ONLY place this happens for connect)
-    clearSessionFiles();
-
-    // Step 3: Start fresh daemon
     initWhatsappSocket().catch((err) => {
       console.error('Daemon startup error:', err);
     });
@@ -394,11 +421,10 @@ app.listen(PORT, async () => {
   console.log(`   Disconnect: POST http://localhost:${PORT}/disconnect`);
   console.log(`   Send:       POST http://localhost:${PORT}/send`);
 
-  // Auto-start bot on boot if a session exists or DB expects it
+  // Auto-start bot on boot ONLY if DB says it should already be connected
   try {
     const settings = await getSettings();
-    const hasSession = fs.existsSync(sessionDir) && fs.readdirSync(sessionDir).length > 0;
-    
+
     if (settings.status === 'connected') {
       console.log('🔄 Active session detected (DB=connected). Auto-starting WhatsApp daemon...');
       initWhatsappSocket().catch(e => console.error('Daemon startup error:', e));
