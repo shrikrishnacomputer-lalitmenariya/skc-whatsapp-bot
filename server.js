@@ -372,6 +372,10 @@ app.post('/connect', async (req, res) => {
     isInitializing = false;
     reconnectAttempts = 0;
 
+    // Explicitly set status to connecting so the dead-man switch allows the connection
+    const settings = await getSettings();
+    await updateSettings(settings.id, { status: 'connecting', qr_code: null });
+
     initWhatsappSocket().catch((err) => {
       console.error('Daemon startup error:', err);
     });
