@@ -162,7 +162,7 @@ async function initWhatsappSocket() {
 
     // Completely ignore history sync events to prevent memory spikes
     sock.ev.on('messaging-history.set', () => {
-      console.log('📚 History sync event received — ignored to save memory.');
+      // console.log('📚 History sync event received — ignored to save memory.');
     });
 
     // Handle connection updates
